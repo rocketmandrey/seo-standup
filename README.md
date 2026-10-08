@@ -55,3 +55,18 @@ curl -fsSL https://raw.githubusercontent.com/rocketmandrey/seo-standup/main/SKIL
 ## Лицензия
 
 [MIT](LICENSE)
+
+## Быстрый прогон с XMLRiver (`tools/standup.py`)
+
+Если есть ключ [XMLRiver](https://xmlriver.com) — один скрипт делает весь стендап: спрос → кластеры по интентам → живая выдача Яндекса → `REPORT.md`. Только stdlib Python, ничего ставить не надо. ~25 ₽ за 1000 запросов: прогон на 3 seed + 15 SERP ≈ 0,5 ₽.
+
+```bash
+cp .env.example .env            # впиши XMLRIVER_USER и XMLRIVER_KEY
+python3 tools/standup.py --balance
+python3 tools/standup.py "зерносушилка" "сушилка для зерна" --serp 15
+python3 tools/standup.py "лепнина" --regions 213 --lr 213   # Москва
+```
+
+Результат в `runs/<seed>-<дата>/`: `REPORT.md` (интенты, кластеры → страницы, кто в выдаче), `semantic-map.csv`, `serp-top10.csv`, `associations.csv`, `raw/`.
+
+Агенту достаточно сказать: «прогони standup по запросам X, Y и сделай выводы» — он запустит скрипт и дочитает `REPORT.md`/CSV.
