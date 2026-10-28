@@ -11,8 +11,8 @@
 Ключи: XMLRIVER_USER / XMLRIVER_KEY в .env в корне репо (см. .env.example).
 Только stdlib. Тариф ~25 ₽ / 1000 запросов — перед запуском печатает смету.
 """
-import argparse, collections, concurrent.futures as cf, csv, gzip, html, itertools, json, os, re, sys, time
-import urllib.error, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+import argparse, collections, concurrent.futures as cf, csv, html, itertools, json, os, re, sys, time
+import urllib.error, urllib.parse, urllib.request, xml.etree.ElementTree as ET, zlib
 from datetime import datetime
 from pathlib import Path
 
@@ -132,12 +132,15 @@ def slugify(phrase):
     return "-".join("".join(SLUG_TR.get(c, c) for c in w).replace("-", "") for w in re.findall(r"[a-zа-яё0-9]+", phrase.lower()) if w not in STOP)[:60]
 
 
+def ungz(b):
+    # часть серверов (WordPress за nginx) шлёт gzip даже без Accept-Encoding; decompressobj терпит обрезанный хвост
+    return zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(b) if b[:2] == b"\x1f\x8b" else b
+
+
 def fetch(url, timeout=20):
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
-            body = r.read(3_000_000)
-            if url.endswith(".gz"):
-                body = gzip.decompress(body)
+            body = ungz(r.read(3_000_000))
             return r.status, r.url, r.headers, body.decode(r.headers.get_content_charset() or "utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, url, e.headers, ""

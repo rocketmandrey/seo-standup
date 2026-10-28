@@ -36,4 +36,8 @@ assert all("encoding" in l for l in src.splitlines() if re.search(r"(write_text|
 # 6: слаги — нормальная транслитерация, не нормализация для матчинга
 assert s.slugify("яндекс доставка грузов из китая") == "yandeks-dostavka-gruzov-kitaya"
 assert s.slugify("дешёвые грузоперевозки с грузчиками") == "deshevye-gruzoperevozki-gruzchikami"
+# gzip без Accept-Encoding (и обрезанный на лимите чтения) распаковывается, обычный HTML не трогаем
+import gzip
+z = gzip.compress("<h1>Фура</h1>".encode() * 50)
+assert s.ungz(z).startswith("<h1>Фура".encode()) and s.ungz(z[:-10]).startswith("<h1>Фура".encode()) and s.ungz(b"<h1>") == b"<h1>"
 print("ok")
