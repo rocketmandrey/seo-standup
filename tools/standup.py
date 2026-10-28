@@ -30,7 +30,7 @@ STOP = set("в во на для и с со по из от до к у о об п�
 def env():
     f = ROOT / ".env"
     if f.exists():
-        for line in f.read_text().splitlines():
+        for line in f.read_text(encoding="utf-8").splitlines():
             k, _, v = line.partition("=")
             if k.strip() and v and not k.startswith("#"):
                 os.environ.setdefault(k.strip(), v.strip().strip("'\""))
@@ -125,8 +125,11 @@ def lat(w):
     return w
 
 
+SLUG_TR = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя", "a b v g d e e zh z i y k l m n o p r s t u f h ts ch sh shch - y - e yu ya".split()))
+
+
 def slugify(phrase):
-    return "-".join(lat(w) for w in re.findall(r"[a-zа-яё0-9]+", phrase.lower()) if w not in STOP)[:60]
+    return "-".join("".join(SLUG_TR.get(c, c) for c in w).replace("-", "") for w in re.findall(r"[a-zа-яё0-9]+", phrase.lower()) if w not in STOP)[:60]
 
 
 def fetch(url, timeout=20):
@@ -163,7 +166,7 @@ def sitemap_urls(site, limit):
             groups.append(locs)
     # вперемешку по под-sitemap'ам, чтобы при лимите попали и страницы, и товары, и статьи
     urls = list(dict.fromkeys([base + "/"] + [u for row in itertools.zip_longest(*groups) for u in row if u]))
-    return urls[:limit], sum(map(len, groups)), found
+    return urls[:limit], sum(map(len, groups)), found  # limit=None → все URL
 
 
 def attrs(body, tag):
@@ -228,7 +231,8 @@ def scan_page(url):
 
 
 def scan_site(site, limit):
-    urls, total, sitemaps = sitemap_urls(site, limit)
+    all_urls, total, sitemaps = sitemap_urls(site, None)
+    urls = all_urls[:limit]
     with cf.ThreadPoolExecutor(16) as ex:
         pages = list(ex.map(scan_page, urls))
     titles = [p["title"] for p in pages if p["title"]]
@@ -245,7 +249,7 @@ def scan_site(site, limit):
         p["_h1"] = {stem(w) for w in re.findall(r"[a-zа-яё0-9]+", p["h1"].lower())}
         p["_title"] = {stem(w) for w in words} - common
         p["_slug"] = {lat(w) for w in slug}
-    return pages, total, sitemaps
+    return pages, total, sitemaps, all_urls[limit:]
 
 
 def find_landing(cluster, pages, phrases=()):
@@ -264,6 +268,26 @@ def find_landing(cluster, pages, phrases=()):
     return best if best and score(best)[0] else None
 
 
+def slug_index(urls):
+    out = []
+    for u in urls:
+        words = [lat(w) for w in re.findall(r"[a-zа-яё0-9]+", urllib.parse.unquote(urllib.parse.urlparse(u).path).lower())]
+        out.append((u, " ".join(words), words))
+    return out
+
+
+def sitemap_hit(cluster, phrases, index):
+    """URL из sitemap вне скана, чей слаг несёт основу кластера + ещё одно слово его фраз. None = дыра подтверждена."""
+    ls = lat(stem(cluster))
+    ctx = {lat(stem(w)) for ph in phrases[:10] for w in re.findall(r"[a-zа-яё0-9]+", ph) if w not in STOP} - {ls}
+    ctx = {c for c in ctx if len(c) >= 4}
+    if len(ls) < 4 or cluster.startswith("("):
+        return None
+    # ponytail: линейный проход по всем URL на кластер; на 80k URL × 100 кластеров — секунды, индекс по префиксам если станет медленно
+    return next((u for u, joined, words in index if ls in joined and any(w.startswith(ls) for w in words)
+                 and any(w.startswith(c) for w in words for c in ctx)), None)
+
+
 def domain_kind(d):
     return "маркетплейс" if re.search(MARKET, d) else "медиа/UGC" if re.search(UGC, d) else "нишевый"
 
@@ -280,7 +304,7 @@ PREFIX = {"купить": "/", "общий": "/", "сравнить": "/vybor/",
 
 
 def write_csv(path, rows, fields):
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fields, extrasaction="ignore")
         w.writeheader(); w.writerows(rows)
 
@@ -297,6 +321,8 @@ def main():
     ap.add_argument("--out", help="папка результата (по умолчанию runs/<seed>-<дата>)")
     ap.add_argument("--balance", action="store_true")
     a = ap.parse_args()
+    for f in (sys.stdout, sys.stderr):  # Windows: в пайпе консоль cp1251, «≈»/«→» роняют print
+        f.reconfigure(encoding="utf-8")
     auth = env()
 
     if a.balance:
@@ -321,7 +347,7 @@ def main():
     # 1. Спрос
     with cf.ThreadPoolExecutor(8) as ex:
         res = dict(zip(a.seeds, ex.map(lambda s: wordstat(s, auth, a.regions), a.seeds)))
-    (out / "raw" / "wordstat.json").write_text(json.dumps(res, ensure_ascii=False, indent=1))
+    (out / "raw" / "wordstat.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     ws_ok = sum(1 for v in res.values() if v[0])
     phrases, assoc = {}, {}
     for pop, ass in res.values():
@@ -348,7 +374,7 @@ def main():
         if size[r["cluster"]] < 2:
             r["cluster"] = "(прочее)"
     write_csv(out / "semantic-map.csv", rows, ["phrase", "freq", "intent", "cluster"])
-    with open(out / "associations.csv", "w", newline="") as f:
+    with open(out / "associations.csv", "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerows([("phrase", "freq"), *sorted(assoc.items(), key=lambda x: -x[1])])
 
     total = sum(r["freq"] for r in rows) or 1
@@ -374,8 +400,8 @@ def main():
     top = list(dict.fromkeys([c["phrases"][0] for _, c in ranked] + [r["phrase"] for r in rows]))[: a.serp]
     with cf.ThreadPoolExecutor(8) as ex:
         serps = dict(zip(top, ex.map(lambda q: serp(q, auth, a.lr), top)))
-    (out / "raw" / "serp.json").write_text(json.dumps(serps, ensure_ascii=False, indent=1))
-    (out / "raw" / "serp-ai.json").write_text(json.dumps(AI_BLOCK, ensure_ascii=False, indent=1))
+    (out / "raw" / "serp.json").write_text(json.dumps(serps, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out / "raw" / "serp-ai.json").write_text(json.dumps(AI_BLOCK, ensure_ascii=False, indent=1), encoding="utf-8")
     write_csv(out / "serp-top10.csv", [{"query": q, **i} for q, items in serps.items() for i in items], ["query", "pos", "domain", "url", "title"])
     ok_serp = sum(1 for v in serps.values() if v)
     dom = collections.Counter(i["domain"] for items in serps.values() for i in items)
@@ -422,12 +448,13 @@ def main():
             L += ["", f"## Кто в выдаче (топ-10 по {ok_serp} запросам)", "", *dom_tbl, "",
                   "Маркетплейсы/агрегаторы в топе = коммерческий запрос, туда нужна сильная категория, а не статья. "
                   "Повторяющиеся нишевые домены = прямые конкуренты, их структуру разбирать первой."]
-        (out / "REPORT.md").write_text("\n".join(L + files) + "\n")
+        (out / "REPORT.md").write_text("\n".join(L + files) + "\n", encoding="utf-8")
         print(f"Готово → {out}/REPORT.md")
         return
 
     # 4. Прожарка сайта
-    pages, sm_total, sitemaps = site_job.result()
+    pages, sm_total, sitemaps, unscanned = site_job.result()
+    index = slug_index(unscanned)
     ex_site.shutdown()
     write_csv(out / "url-inventory.csv", pages, ["url", "status", "final_url", "type", "indexable", "title", "h1", "canonical", "robots", "words", "problems"])
     plan = []
@@ -436,10 +463,13 @@ def main():
             continue  # спрос на площадку — своей страницей его не забрать
         kind = c["intent"] if c["intent"] != "общий" or k == "(ядро)" else "узнать"  # «общий» вне ядра — это инфо (рецепты и т.п.)
         land = find_landing(k, pages, c["phrases"])
+        hit = None if land else sitemap_hit(k, c["phrases"], index)
         qs = [q for q in serps if q in c["phrases"] and serps[q]]
         pos = [site_pos[q] for q in qs if site_pos[q]]
         rivals = list(dict.fromkeys(i["domain"] for q in qs for i in serps[q][:5] if i["domain"] != site_host))[:4]
-        if not land:
+        if hit:
+            status, why = "Проверить", f"в скан не попала, в sitemap есть {urllib.parse.unquote(urllib.parse.urlparse(hit).path)}"
+        elif not land:
             status, why = "Новая", "посадочной нет"
         elif c["intent"] == "купить" and land["type"] == "статья":
             status, why = "Усилить", "коммерческий спрос ловит статья — нужна коммерческая посадочная"
@@ -449,12 +479,12 @@ def main():
             status, why = "Усилить", land["problems"]
         else:
             status, why = ("Держать", f"в топ-10 (#{min(pos)})") if pos else ("Есть", "посадочная есть, выдача не снималась")
-        path = urllib.parse.unquote(urllib.parse.urlparse(land["url"]).path) if land else f"{PREFIX[kind]}{slugify(c['phrases'][0])}/"
+        path = urllib.parse.unquote(urllib.parse.urlparse((land or {"url": hit})["url"]).path) if land or hit else f"{PREFIX[kind]}{slugify(c['phrases'][0])}/"
         plan.append({"cluster": k, "intent": c["intent"], "layer": LAYER[kind], "freq": c["freq"], "status": status, "target_url": path,
-                     "current_type": land["type"] if land else "", "site_pos": min(pos) if pos else ("—" if qs else "не снималось"),
+                     "current_type": land["type"] if land else page_type(hit) if hit else "", "site_pos": min(pos) if pos else ("—" if qs else "не снималось"),
                      "keyword_focus": "; ".join(c["phrases"][:4]), "why": why,
                      "brief": f"{BRIEF[kind]} Сейчас: {why}." + (f" В топе: {', '.join(rivals)}." if rivals else "")})
-    todo = [p for p in plan if p["status"] in ("Новая", "Усилить")]
+    todo = [p for p in plan if p["status"] in ("Новая", "Усилить", "Проверить")]
     for i, p in enumerate(todo):
         p["priority"] = "P0" if i < 6 else "P1" if i < 16 else "P2"
     write_csv(out / "content-plan.csv", todo[:40], ["priority", "target_url", "status", "cluster", "intent", "freq", "site_pos", "keyword_focus", "brief"])
@@ -489,7 +519,10 @@ def main():
          f"- XMLRiver Wordstat: {ws_ok}/{len(a.seeds)} seed → **{len(rows)}** фраз (частота ≥ {a.min_freq}), {n(total)} показов/мес.; ассоциаций на разбор: {len(assoc)}.",
          f"- XMLRiver выдача Яндекса: **{ok_serp}/{len(top)}** запросов (главная фраза каждого кластера по весу), {sum(map(len, serps.values()))} органических результатов.",
          f"- Сайт: {len(sitemaps)} sitemap ({sitemaps[0] if sitemaps else 'не найден'}) → {sm_total} URL, просканировано **{len(pages)}** (лимит {a.max_urls}), "
-         f"200: {sum(1 for p in pages if p['status'] == 200)}, индексируемых: {sum(1 for p in pages if p['indexable'])}.",
+         f"200: {sum(1 for p in pages if p['status'] == 200)}, индексируемых: {sum(1 for p in pages if p['indexable'])}."
+         + (f" **⚠ Скан обрезан: {len(pages)} из {sm_total} URL.** Дыры сверены по слагам всех URL sitemap: "
+            f"{sum(1 for p in plan if p['status'] == 'Проверить')} кластеров получили статус «Проверить» (страница есть, но не сканировалась)."
+            if sm_total > len(pages) else ""),
          f"- Стоимость: ≈ {cost:.2f} ₽ ({len(a.seeds) + len(top)} запросов XMLRiver; скан сайта бесплатный).", "",
          "## Вердикт", "", *verdict, "",
          "## Структурные дыры", "", "Кластеры без своей посадочной, по очереди приоритета (купить → сравнить → остальное, внутри — по спросу).", "",
@@ -523,9 +556,9 @@ def main():
           "## Интенты", "", *intents_tbl, "", "## Все кластеры", "", *clusters_tbl, *files,
           "- `url-inventory.csv` — скан сайта: статус, title, H1, canonical, robots, тип, проблемы",
           "- `content-plan.csv`, `SITE-ARCHITECTURE.md` — что делать"]
-    (out / "REPORT.md").write_text("\n".join(L) + "\n")
+    (out / "REPORT.md").write_text("\n".join(L) + "\n", encoding="utf-8")
 
-    A = [f"# {site_host} — целевая структура под спрос", "", "Статусы: **Новая** — страницы нет, **Усилить** — есть, но не ловит кластер, "
+    A = [f"# {site_host} — целевая структура под спрос", "", "Статусы: **Новая** — страницы нет, **Проверить** — есть в sitemap, но не сканировалась, **Усилить** — есть, но не ловит кластер, "
          "**Держать** — в топ-10, **Есть** — страница есть, выдача не снималась. Слой определяется интентом кластера.", ""]
     for layer in dict.fromkeys(LAYER.values()):
         items = [p for p in plan if p["layer"] == layer]
@@ -537,7 +570,7 @@ def main():
         A += ["## Убрать из sitemap / закрыть noindex", ""] + [f"- {urllib.parse.unquote(p['url'])} — {p['problems'] or p['type']}" for p in out_idx[:30]] + [""]
     A += ["## Перелинковка", "", "- Инфо/блог → страница выбора → коммерческая посадочная: каждая статья ведёт в деньги.",
           "- Сравнения → чеклист выбора → категория/карточка.", "- Одна страница = один кластер; при пересечении — склеить и 301, а не держать двух слабых."]
-    (out / "SITE-ARCHITECTURE.md").write_text("\n".join(A) + "\n")
+    (out / "SITE-ARCHITECTURE.md").write_text("\n".join(A) + "\n", encoding="utf-8")
     print(f"Готово → {out}/REPORT.md")
 
 
